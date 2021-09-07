@@ -1,4 +1,5 @@
 **/data/
 **/__pycache__/
+**/*.pkl
 .Trash*
 .ipynb_checkpoints/
