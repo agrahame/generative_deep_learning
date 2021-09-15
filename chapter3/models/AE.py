@@ -75,11 +75,11 @@ class AutoEncoder(nn.Module):
         
         # Using dummy batch size of 64
         zeros = torch.zeros([64, *self.input_dim])
-        shape_before_flatten = conv(zeros).shape[1:]
+        self.shape_before_flatten = conv(zeros).shape[1:]
         
         self.encoder = nn.Sequential(*conv_layers,
                                      nn.Flatten(),
-                                     nn.Linear(in_features=np.prod(shape_before_flatten),
+                                     nn.Linear(in_features=np.prod(self.shape_before_flatten),
                                                out_features=self.z_dim
                                               )
                                     )
@@ -123,14 +123,12 @@ class AutoEncoder(nn.Module):
                 conv_t_layers.append(nn.Sigmoid())
         
         self.decoder = nn.Sequential(nn.Linear(in_features=self.z_dim,
-                                               out_features=np.prod(shape_before_flatten)
+                                               out_features=np.prod(self.shape_before_flatten)
                                               ),
-                                     nn.Unflatten(1, shape_before_flatten),
+                                     nn.Unflatten(1, self.shape_before_flatten),
                                      *conv_t_layers
                                     )
         
-        # self.model = nn.Sequential(self.encoder, self.decoder)
-        
     
     def forward(self, batch):
-        return nn.Sequential(self.encoder, self.decoder)(batch) # self.model(batch)
+        return nn.Sequential(self.encoder, self.decoder)(batch)
