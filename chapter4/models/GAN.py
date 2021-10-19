@@ -2,51 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from typing import List
-
-
-class GAN(nn.Module):
-
-    def __init__(self,
-                 input_shape: List[int],
-                 disc_conv_filters: List[int],
-                 disc_conv_kernels: List[int],
-                 disc_conv_strides: List[int],
-                 disc_batch_norm_mom: float,
-                 disc_dropout_prob: float,
-                 gen_unflattened_shape: List[int],
-                 gen_upsample_scale: List[int],
-                 gen_conv_filters: List[int],
-                 gen_conv_kernels: List[int],
-                 gen_conv_strides: List[int],
-                 gen_batch_norm_mom: float,
-                 gen_dropout_prob: float,
-                 z_dim: int
-                ):
-        super().__init__()
-        self.generator = Generator(z_dim=z_dim,
-                                   unflattened_shape=gen_unflattened_shape,
-                                   upsample_scale=gen_upsample_scale,
-                                   filters=gen_conv_filters,
-                                   kernels=gen_conv_kernels,
-                                   strides=gen_conv_strides,
-                                   batch_norm_mom=gen_batch_norm_mom,
-                                   dropout_prob=gen_dropout_prob
-                                  )
-        self.discriminator = Discriminator(input_shape=input_shape,
-                                           filters=disc_conv_filters,
-                                           kernels=disc_conv_kernels,
-                                           strides=disc_conv_strides,
-                                           batch_norm_mom=disc_batch_norm_mom,
-                                           dropout_prob=disc_dropout_prob
-                                          )
-
-        self._build()
-
-    def _build(self):
-        pass
-    
-    def forward(self, batch):
-        pass
+from fastai.torch_core import default_device
 
 
 class Generator(nn.Module):
@@ -101,7 +57,7 @@ class Generator(nn.Module):
                                       )
                     )
                 
-                conv_layers.append(nn.ReLU())
+                conv_layers.append(nn.LeakyReLU())
             else:
                 conv_layers.append(nn.Tanh())
         
@@ -118,7 +74,7 @@ class Generator(nn.Module):
                               )
             )
         
-        dense_layers.append(nn.ReLU())
+        dense_layers.append(nn.LeakyReLU())
         
         if self.dropout_prob:
             dense_layers.append(
@@ -183,7 +139,7 @@ class Discriminator(nn.Module):
                                   )
                 )
             
-            conv_layers.append(nn.ReLU())
+            conv_layers.append(nn.LeakyReLU())
             
             if self.dropout_prob:
                 conv_layers.append(
@@ -203,3 +159,52 @@ class Discriminator(nn.Module):
     
     def forward(self, batch):
         return self.model(batch)
+
+
+class GANModule(nn.Module):
+
+    def __init__(self,
+                 generator: Generator = None,
+                 discriminator: Discriminator = None,
+                 gen_mode: bool = False
+                ):
+        super().__init__()
+        
+        if generator is not None:
+            self.generator = generator
+        
+        if discriminator is not None:
+            self.discriminator = discriminator
+    
+    def switch(self, gen_mode=None):
+        self.gen_mode = not self.gen_mode if gen_mode is None else gen_mode
+    
+    def forward(self, *args):
+        if self.gen_mode:
+            return self.generator(*args)
+        
+        return self.discriminator(*args)
+
+
+class GANLoss(GANModule):
+    
+    def __init__(self,
+                 gen_loss_func,
+                 disc_loss_func,
+                 gan: GANModule
+                ):
+        super().__init__()
+        self.gen_loss_func = gen_loss_func
+        self.disc_loss_func = disc_loss_func
+        self.gan = gan
+        
+        def generator(self, gen_output, real_image):
+            disc_pred = self.gan.discriminator(gen_output)
+            
+            return gen_loss_func(disc_pred)
+        
+        def discriminator(self, real_pred, noise):
+            generated = self.gan.generator(noise)
+            fake_pred = self.gan.discriminator(generated)
+            
+            return disc_loss_func(fake_pred, real_pred)
