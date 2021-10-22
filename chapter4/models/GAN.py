@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from typing import List
-from fastai.torch_core import default_device
+from fastai.vision.all import *
 
 
 class Generator(nn.Module):
@@ -208,3 +208,69 @@ class GANLoss(GANModule):
             fake_pred = self.gan.discriminator(generated)
             
             return disc_loss_func(fake_pred, real_pred)
+
+
+def freeze_model(model, requires_grad):
+    for param in model.parameters():
+        param.requires_grad_(requires_grad)
+
+
+def GANTrainer(Callback):
+    
+    def __init__(self, gen_first, switch_eval, beta):
+        self.gan = gan
+        self.gen_first = gen_first
+        self.switch_eval = switch_eval
+        
+        self.gen_loss = AvgSmoothLoss(beta=beta)
+        self.disc_loss = AvgSmoothLoss(beta=beta)
+    
+    def _set_trainable(self):
+        train_model = self.generator if self.gen_mode else self.discriminator
+        eval_model = self.discriminator if self.gen_mode else self.generator
+        freeze_model(train_model, requires_grad=True)
+        freeze_model(eval_model, requires_grad=False)
+        
+        if self.switch_eval:
+            train_model.train()
+            eval_model.eval()
+    
+    def before_fit(self):
+        self.generator = self.model.generator
+        self.discriminator = self.model.discriminator
+        self.gen_mode = self.gen_first
+        self.switch(self.gen_mode)
+        self.gen_losses = []
+        self.disc_losses = []
+        self.gen_loss.reset()
+        self.disc_loss.reset()
+    
+    def before_epoch(self):
+        # Switch the gen or disc back to eval if necessary
+        self.switch(self.gen_mode)
+    
+    def before_validate(self):
+        self.switch(gen_mode=True)
+    
+    def before_batch(self):
+        # Make sure the input is what we expect
+        # The dataset items are (noise, real_image)
+        if not self.gen_mode:
+            self.learn.xb, self.learn.yb = self.yb, self.xb
+    
+    def after_batch(self):
+        if not self.training:
+            return
+        
+        if self.gen_mode:
+            self.gen_loss.accumulate(self.learn)
+            self.gen_losses.append(self.gen_loss.value)
+        else:
+            self.disc_loss.accumulate(self.learn)
+            self.disc_losses.append(self.disc_loss.value)
+    
+    def switch(self, gen_mode=None):
+        self.gen_mode = not self.gen_mode if gen_mode is None else gen_mode
+        self._set_trainable()
+        self.model.switch(gen_mode)
+        self.loss_func.switch(gen_mode)
