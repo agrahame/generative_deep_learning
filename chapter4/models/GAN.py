@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 from typing import List
 from fastai.vision.all import *
+from fastai.vision.gan import FixedGANSwitcher
 
 
 class Generator(nn.Module):
@@ -215,7 +216,7 @@ def freeze_model(model, requires_grad):
         param.requires_grad_(requires_grad)
 
 
-def GANTrainer(Callback):
+class GANTrainer(Callback):
     
     def __init__(self, gen_first, switch_eval, beta):
         self.gan = gan
@@ -274,3 +275,36 @@ def GANTrainer(Callback):
         self._set_trainable()
         self.model.switch(gen_mode)
         self.loss_func.switch(gen_mode)
+
+
+class GANLearner(Learner):
+    
+    def __init__(self,
+                 dataloaders,
+                 generator,
+                 discriminator,
+                 gen_loss_func,
+                 disc_loss_func,
+                 switcher=None,
+                 gen_first=False,
+                 beta=0.98,
+                 switch_eval=True,
+                 callbacks=None,
+                 metrics=None,
+                 **kwargs
+                ):
+        
+        gan = GANModule(generator, discriminator, gen_mode=gen_first)
+        loss_func = GANLoss(gen_loss_func, disc_loss_func, gan)
+        switcher = FixedGANSwitcher() if switcher is None else switcher
+        trainer = GANTrainer(gen_first, switch_eval, beta)
+        callbacks = L(callbacks) + L(trainer, switcher)
+        metrics = L(metrics) + L(*LossMetrics('gen_loss,disc_loss'))
+        
+        super().__init__(dataloaders,
+                         gan,
+                         loss_func=loss_func,
+                         cbs=callbacks,
+                         metrics=metrics,
+                         **kwargs
+                        )
