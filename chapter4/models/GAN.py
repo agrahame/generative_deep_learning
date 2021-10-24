@@ -199,16 +199,18 @@ class GANLoss(GANModule):
         self.disc_loss_func = disc_loss_func
         self.gan = gan
         
-        def generator(self, gen_output, real_image):
-            disc_pred = self.gan.discriminator(gen_output)
-            
-            return gen_loss_func(disc_pred)
+    def generator(self, gen_output, real_image):
+        disc_pred = self.gan.discriminator(gen_output)
+        self.gen_loss = self.gen_loss_func(disc_pred)
         
-        def discriminator(self, real_pred, noise):
-            generated = self.gan.generator(noise)
-            fake_pred = self.gan.discriminator(generated)
-            
-            return disc_loss_func(fake_pred, real_pred)
+        return self.gen_loss
+
+    def discriminator(self, real_pred, noise):
+        generated = self.gan.generator(noise)
+        fake_pred = self.gan.discriminator(generated)
+        self.disc_loss = self.disc_loss_func(fake_pred, real_pred)
+        
+        return self.disc_loss
 
 
 def freeze_model(model, requires_grad):
@@ -219,7 +221,6 @@ def freeze_model(model, requires_grad):
 class GANTrainer(Callback):
     
     def __init__(self, gen_first, switch_eval, beta):
-        self.gan = gan
         self.gen_first = gen_first
         self.switch_eval = switch_eval
         
@@ -227,8 +228,8 @@ class GANTrainer(Callback):
         self.disc_loss = AvgSmoothLoss(beta=beta)
     
     def _set_trainable(self):
-        train_model = self.generator if self.gen_mode else self.discriminator
-        eval_model = self.discriminator if self.gen_mode else self.generator
+        train_model = self.model.generator if self.model.gen_mode else self.model.discriminator
+        eval_model = self.model.discriminator if self.model.gen_mode else self.model.generator
         freeze_model(train_model, requires_grad=True)
         freeze_model(eval_model, requires_grad=False)
         
@@ -237,10 +238,7 @@ class GANTrainer(Callback):
             eval_model.eval()
     
     def before_fit(self):
-        self.generator = self.model.generator
-        self.discriminator = self.model.discriminator
-        self.gen_mode = self.gen_first
-        self.switch(self.gen_mode)
+        self.switch(self.gen_first)
         self.gen_losses = []
         self.disc_losses = []
         self.gen_loss.reset()
@@ -248,7 +246,7 @@ class GANTrainer(Callback):
     
     def before_epoch(self):
         # Switch the gen or disc back to eval if necessary
-        self.switch(self.gen_mode)
+        self.switch(self.model.gen_mode)
     
     def before_validate(self):
         self.switch(gen_mode=True)
@@ -256,14 +254,14 @@ class GANTrainer(Callback):
     def before_batch(self):
         # Make sure the input is what we expect
         # The dataset items are (noise, real_image)
-        if not self.gen_mode:
+        if not self.model.gen_mode:
             self.learn.xb, self.learn.yb = self.yb, self.xb
     
     def after_batch(self):
         if not self.training:
             return
         
-        if self.gen_mode:
+        if self.model.gen_mode:
             self.gen_loss.accumulate(self.learn)
             self.gen_losses.append(self.gen_loss.value)
         else:
@@ -271,10 +269,9 @@ class GANTrainer(Callback):
             self.disc_losses.append(self.disc_loss.value)
     
     def switch(self, gen_mode=None):
-        self.gen_mode = not self.gen_mode if gen_mode is None else gen_mode
-        self._set_trainable()
         self.model.switch(gen_mode)
         self.loss_func.switch(gen_mode)
+        self._set_trainable()
 
 
 class GANLearner(Learner):
