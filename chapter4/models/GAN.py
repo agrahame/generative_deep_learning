@@ -58,7 +58,7 @@ class Generator(nn.Module):
                                       )
                     )
                 
-                conv_layers.append(nn.LeakyReLU())
+                conv_layers.append(nn.LeakyReLU(negative_slope=0.2))
             else:
                 conv_layers.append(nn.Tanh())
         
@@ -94,7 +94,7 @@ class Generator(nn.Module):
         return self.model(batch)
 
 
-class Discriminator(nn.Module):
+class Critic(nn.Module):
 
     def __init__(self,
                  input_shape: List[int],
@@ -102,7 +102,8 @@ class Discriminator(nn.Module):
                  kernels: List[int],
                  strides: List[int],
                  batch_norm_mom: float,
-                 dropout_prob: float
+                 dropout_prob: float,
+                 w_sigmoid: bool = False
                 ):
         super().__init__()
         
@@ -112,6 +113,7 @@ class Discriminator(nn.Module):
         self.strides = strides
         self.batch_norm_mom = batch_norm_mom
         self.dropout_prob = dropout_prob
+        self.w_sigmoid = w_sigmoid
         
         self.n_conv_layers = len(filters)
         
@@ -140,7 +142,7 @@ class Discriminator(nn.Module):
                                   )
                 )
             
-            conv_layers.append(nn.LeakyReLU())
+            conv_layers.append(nn.LeakyReLU(negative_slope=0.2))
             
             if self.dropout_prob:
                 conv_layers.append(
@@ -150,13 +152,17 @@ class Discriminator(nn.Module):
         dummy_input = torch.unsqueeze(torch.zeros(self.input_shape), 0)
         unflattened_shape = nn.Sequential(*conv_layers)(dummy_input).shape[1:]
         
-        self.model = nn.Sequential(*conv_layers,
-                                   nn.Flatten(),
-                                   nn.Linear(in_features=np.prod(unflattened_shape),
-                                             out_features=1
-                                            ),
-                                   nn.Sigmoid()
-                                  )
+        layers = [*conv_layers,
+                  nn.Flatten(),
+                  nn.Linear(in_features=np.prod(unflattened_shape),
+                            out_features=1
+                           )
+                 ]
+        
+        if self.w_sigmoid:
+            layers.append(nn.Sigmoid())
+        
+        self.model = nn.Sequential(*layers)
     
     def forward(self, batch):
         return self.model(batch)
@@ -165,8 +171,8 @@ class Discriminator(nn.Module):
 class GANModule(nn.Module):
 
     def __init__(self,
-                 generator: Generator = None,
-                 discriminator: Discriminator = None,
+                 generator: nn.Module = None,
+                 critic: nn.Module = None,
                  gen_mode: bool = False
                 ):
         super().__init__()
@@ -174,8 +180,8 @@ class GANModule(nn.Module):
         if generator is not None:
             self.generator = generator
         
-        if discriminator is not None:
-            self.discriminator = discriminator
+        if critic is not None:
+            self.critic = critic
     
     def switch(self, gen_mode=None):
         self.gen_mode = not self.gen_mode if gen_mode is None else gen_mode
@@ -184,33 +190,41 @@ class GANModule(nn.Module):
         if self.gen_mode:
             return self.generator(*args)
         
-        return self.discriminator(*args)
+        return self.critic(*args)
 
 
 class GANLoss(GANModule):
     
     def __init__(self,
-                 gen_loss_func,
-                 disc_loss_func,
+                 genr8r_loss_func,
+                 critic_loss_func,
                  gan: GANModule
                 ):
         super().__init__()
-        self.gen_loss_func = gen_loss_func
-        self.disc_loss_func = disc_loss_func
+        self.genr8r_loss_func = genr8r_loss_func
+        self.critic_loss_func = critic_loss_func
         self.gan = gan
         
-    def generator(self, gen_output, real_image):
-        disc_pred = self.gan.discriminator(gen_output)
-        self.gen_loss = self.gen_loss_func(disc_pred)
+    def generator(self, genr8r_output, real_image):
+        critic_pred = self.gan.critic(genr8r_output)
+        self.genr8r_loss = self.genr8r_loss_func(critic_pred)
         
-        return self.gen_loss
+        return self.genr8r_loss
 
-    def discriminator(self, real_pred, noise):
+    def critic(self, real_pred, noise):
         generated = self.gan.generator(noise)
-        fake_pred = self.gan.discriminator(generated)
-        self.disc_loss = self.disc_loss_func(fake_pred, real_pred)
+        fake_pred = self.gan.critic(generated)
+        self.critic_loss = self.critic_loss_func(fake_pred, real_pred)
         
-        return self.disc_loss
+        return self.critic_loss
+
+
+def wgan_genr8r_loss(fake_pred):
+    return fake_pred.mean()
+
+
+def wgan_critic_loss(fake_pred, real_pred):
+    return real_pred.mean() - fake_pred.mean()
 
 
 def freeze_model(model, requires_grad):
@@ -220,16 +234,17 @@ def freeze_model(model, requires_grad):
 
 class GANTrainer(Callback):
     
-    def __init__(self, gen_first, switch_eval, beta):
+    def __init__(self, gen_first, switch_eval, beta, clip):
         self.gen_first = gen_first
         self.switch_eval = switch_eval
+        self.clip = clip
         
-        self.gen_loss = AvgSmoothLoss(beta=beta)
-        self.disc_loss = AvgSmoothLoss(beta=beta)
+        self.genr8r_loss = AvgSmoothLoss(beta=beta)
+        self.critic_loss = AvgSmoothLoss(beta=beta)
     
     def _set_trainable(self):
-        train_model = self.model.generator if self.model.gen_mode else self.model.discriminator
-        eval_model = self.model.discriminator if self.model.gen_mode else self.model.generator
+        train_model = self.model.generator if self.model.gen_mode else self.model.critic
+        eval_model = self.model.critic if self.model.gen_mode else self.model.generator
         freeze_model(train_model, requires_grad=True)
         freeze_model(eval_model, requires_grad=False)
         
@@ -239,10 +254,10 @@ class GANTrainer(Callback):
     
     def before_fit(self):
         self.switch(self.gen_first)
-        self.gen_losses = []
-        self.disc_losses = []
-        self.gen_loss.reset()
-        self.disc_loss.reset()
+        self.genr8r_losses = []
+        self.critic_losses = []
+        self.genr8r_loss.reset()
+        self.critic_loss.reset()
     
     def before_epoch(self):
         # Switch the gen or disc back to eval if necessary
@@ -252,6 +267,10 @@ class GANTrainer(Callback):
         self.switch(gen_mode=True)
     
     def before_batch(self):
+        if self.training and self.clip is not None:
+            for param in self.model.critic.parameters:
+                param.data.clamp_(-self.clip, self.clip)
+        
         # Make sure the input is what we expect
         # The dataset items are (noise, real_image)
         if not self.model.gen_mode:
@@ -262,11 +281,11 @@ class GANTrainer(Callback):
             return
         
         if self.model.gen_mode:
-            self.gen_loss.accumulate(self.learn)
-            self.gen_losses.append(self.gen_loss.value)
+            self.genr8r_loss.accumulate(self.learn)
+            self.genr8r_losses.append(self.genr8r_loss.value)
         else:
-            self.disc_loss.accumulate(self.learn)
-            self.disc_losses.append(self.disc_loss.value)
+            self.critic_loss.accumulate(self.learn)
+            self.critic_losses.append(self.critic_loss.value)
     
     def switch(self, gen_mode=None):
         self.model.switch(gen_mode)
@@ -279,24 +298,25 @@ class GANLearner(Learner):
     def __init__(self,
                  dataloaders,
                  generator,
-                 discriminator,
-                 gen_loss_func,
-                 disc_loss_func,
+                 critic,
+                 genr8r_loss_func,
+                 critic_loss_func,
                  switcher=None,
                  gen_first=False,
                  beta=0.98,
+                 clip=None,
                  switch_eval=True,
                  callbacks=None,
                  metrics=None,
                  **kwargs
                 ):
         
-        gan = GANModule(generator, discriminator, gen_mode=gen_first)
-        loss_func = GANLoss(gen_loss_func, disc_loss_func, gan)
+        gan = GANModule(generator, critic, gen_mode=gen_first)
+        loss_func = GANLoss(genr8r_loss_func, critic_loss_func, gan)
         switcher = FixedGANSwitcher() if switcher is None else switcher
-        trainer = GANTrainer(gen_first, switch_eval, beta)
+        trainer = GANTrainer(gen_first, switch_eval, beta, clip)
         callbacks = L(callbacks) + L(trainer, switcher)
-        metrics = L(metrics) + L(*LossMetrics('gen_loss,disc_loss'))
+        metrics = L(metrics) + L(*LossMetrics('genr8r_loss,critic_loss'))
         
         super().__init__(dataloaders,
                          gan,
@@ -305,3 +325,25 @@ class GANLearner(Learner):
                          metrics=metrics,
                          **kwargs
                         )
+    
+    @classmethod
+    def wgan(cls,
+             dataloaders,
+             generator,
+             critic,
+             switcher=None,
+             clip=0.01,
+             **kwargs):
+        
+        if switcher is None:
+            switcher = FixedGANSwitcher(n_crit=5, n_gen=1)
+        
+        return cls(dataloaders=dataloaders,
+                   generator=generator,
+                   critic=critic,
+                   genr8r_loss_func=wgan_genr8r_loss,
+                   critic_loss_func=wgan_critic_loss,
+                   switcher=switcher,
+                   clip=clip,
+                   **kwargs
+                  )
