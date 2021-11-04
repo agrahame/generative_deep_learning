@@ -268,7 +268,7 @@ class GANTrainer(Callback):
     
     def before_batch(self):
         if self.training and self.clip is not None:
-            for param in self.model.critic.parameters:
+            for param in self.model.critic.parameters():
                 param.data.clamp_(-self.clip, self.clip)
         
         # Make sure the input is what we expect
