@@ -4,6 +4,7 @@ import numpy as np
 from typing import List
 from fastai.vision.all import *
 from fastai.vision.gan import FixedGANSwitcher
+from functools import partial
 
 
 class Generator(nn.Module):
@@ -205,18 +206,46 @@ class GANLoss(GANModule):
         self.critic_loss_func = critic_loss_func
         self.gan = gan
         
-    def generator(self, genr8r_output, real_image):
+    def generator(self, genr8r_output, real_data):
         critic_pred = self.gan.critic(genr8r_output)
         self.genr8r_loss = self.genr8r_loss_func(critic_pred)
         
         return self.genr8r_loss
 
-    def critic(self, real_pred, noise):
+    def critic(self, real_pred, noise, real_data):
         generated = self.gan.generator(noise)
         fake_pred = self.gan.critic(generated)
         self.critic_loss = self.critic_loss_func(fake_pred, real_pred)
         
+        if real_data is not None:
+            # real_data is only defined when gradient penalty is enabled
+            # in the learner
+            
+            self.critic_loss += self._gradient_penalty(generated, real_data)
+        
         return self.critic_loss
+    
+    def _gradient_penalty(fake_data, real_data):
+        batch_size = real_data.shape[0]
+        epsilon = torch.rand((batch_size, 1, 1, 1)).to(default_device())
+
+        interpolated = epsilon * real_data + (1 - epsilon) * fake_data
+
+        score = self.gan.critic(interpolated)
+
+        gradient = torch.autograd.grad(outputs=score,
+                                       inputs=interpolated,
+                                       grad_outputs=torch.ones_likes(score)
+                                      )[0]
+
+        # Flatten the C x H x W
+        gradient = gradient.view(gradient.shape[0], -1)
+
+        l2_norm = gradient.norm(2, dim=1)
+        penalty = torch.mean((l2_norm - 1) ** 2)
+        
+        return penalty
+        
 
 
 def wgan_genr8r_loss(fake_pred):
@@ -275,6 +304,13 @@ class GANTrainer(Callback):
         # The dataset items are (noise, real_image)
         if not self.model.gen_mode:
             self.learn.xb, self.learn.yb = self.yb, self.xb
+            
+            if self.w_grad_penalty:
+                # To calculate the gradient penalty I
+                # need the real batch to interpolate with
+                # the generated batch. So pass the real
+                # batch with the noise to the critic loss
+                self.learn.yb = (self.yb, self.xb)
     
     def after_batch(self):
         if not self.training:
@@ -301,6 +337,7 @@ class GANLearner(Learner):
                  critic,
                  genr8r_loss_func,
                  critic_loss_func,
+                 w_grad_penalty=True,
                  switcher=None,
                  gen_first=False,
                  beta=0.98,
@@ -311,6 +348,7 @@ class GANLearner(Learner):
                  **kwargs
                 ):
         
+        self.w_grad_penalty = w_grad_penalty
         gan = GANModule(generator, critic, gen_mode=gen_first)
         loss_func = GANLoss(genr8r_loss_func, critic_loss_func, gan)
         switcher = FixedGANSwitcher() if switcher is None else switcher
