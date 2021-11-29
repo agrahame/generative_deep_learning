@@ -5,6 +5,7 @@ from typing import List
 from fastai.vision.all import *
 from fastai.vision.gan import FixedGANSwitcher
 from functools import partial
+from IPython.core.debugger import set_trace
 
 
 class Generator(nn.Module):
@@ -212,7 +213,13 @@ class GANLoss(GANModule):
         
         return self.genr8r_loss
 
-    def critic(self, real_pred, noise, real_data):
+    def critic(self, real_pred, noise, real_data=None):
+        if real_data is not None:
+            # noise and real_data get passed as tuples of
+            # len 1
+            noise = noise[0]
+            real_data = real_data[0]
+        
         generated = self.gan.generator(noise)
         fake_pred = self.gan.critic(generated)
         self.critic_loss = self.critic_loss_func(fake_pred, real_pred)
@@ -225,9 +232,9 @@ class GANLoss(GANModule):
         
         return self.critic_loss
     
-    def _gradient_penalty(fake_data, real_data):
+    def _gradient_penalty(self, fake_data, real_data):
         batch_size = real_data.shape[0]
-        epsilon = torch.rand((batch_size, 1, 1, 1)).to(default_device())
+        epsilon = torch.rand((batch_size, 1, 1, 1)).to(default_device()).requires_grad_()
 
         interpolated = epsilon * real_data + (1 - epsilon) * fake_data
 
@@ -235,7 +242,7 @@ class GANLoss(GANModule):
 
         gradient = torch.autograd.grad(outputs=score,
                                        inputs=interpolated,
-                                       grad_outputs=torch.ones_likes(score)
+                                       grad_outputs=torch.ones_like(score)
                                       )[0]
 
         # Flatten the C x H x W
@@ -337,7 +344,7 @@ class GANLearner(Learner):
                  critic,
                  genr8r_loss_func,
                  critic_loss_func,
-                 w_grad_penalty=True,
+                 w_grad_penalty=False,
                  switcher=None,
                  gen_first=False,
                  beta=0.98,
@@ -369,6 +376,7 @@ class GANLearner(Learner):
              dataloaders,
              generator,
              critic,
+             w_grad_penalty=False,
              switcher=None,
              clip=0.01,
              **kwargs):
@@ -381,6 +389,7 @@ class GANLearner(Learner):
                    critic=critic,
                    genr8r_loss_func=wgan_genr8r_loss,
                    critic_loss_func=wgan_critic_loss,
+                   w_grad_penalty=w_grad_penalty,
                    switcher=switcher,
                    clip=clip,
                    **kwargs
