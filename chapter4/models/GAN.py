@@ -200,12 +200,14 @@ class GANLoss(GANModule):
     def __init__(self,
                  genr8r_loss_func,
                  critic_loss_func,
-                 gan: GANModule
+                 gan: GANModule,
+                 gp_lambda,
                 ):
         super().__init__()
         self.genr8r_loss_func = genr8r_loss_func
         self.critic_loss_func = critic_loss_func
         self.gan = gan
+        self.gp_lambda = gp_lambda
         
     def generator(self, genr8r_output, real_data):
         critic_pred = self.gan.critic(genr8r_output)
@@ -228,7 +230,7 @@ class GANLoss(GANModule):
             # real_data is only defined when gradient penalty is enabled
             # in the learner
             
-            self.critic_loss += self._gradient_penalty(generated, real_data)
+            self.critic_loss += self.gp_lambda * self._gradient_penalty(generated, real_data)
         
         return self.critic_loss
     
@@ -242,7 +244,9 @@ class GANLoss(GANModule):
 
         gradient = torch.autograd.grad(outputs=score,
                                        inputs=interpolated,
-                                       grad_outputs=torch.ones_like(score)
+                                       grad_outputs=torch.ones_like(score),
+                                       create_graph=True,
+                                       retain_graph=True,
                                       )[0]
 
         # Flatten the C x H x W
@@ -345,6 +349,7 @@ class GANLearner(Learner):
                  genr8r_loss_func,
                  critic_loss_func,
                  w_grad_penalty=False,
+                 gp_lambda=10,
                  switcher=None,
                  gen_first=False,
                  beta=0.98,
@@ -357,7 +362,7 @@ class GANLearner(Learner):
         
         self.w_grad_penalty = w_grad_penalty
         gan = GANModule(generator, critic, gen_mode=gen_first)
-        loss_func = GANLoss(genr8r_loss_func, critic_loss_func, gan)
+        loss_func = GANLoss(genr8r_loss_func, critic_loss_func, gan, gp_lambda)
         switcher = FixedGANSwitcher() if switcher is None else switcher
         trainer = GANTrainer(gen_first, switch_eval, beta, clip)
         callbacks = L(callbacks) + L(trainer, switcher)
@@ -376,7 +381,6 @@ class GANLearner(Learner):
              dataloaders,
              generator,
              critic,
-             w_grad_penalty=False,
              switcher=None,
              clip=0.01,
              **kwargs):
@@ -389,8 +393,33 @@ class GANLearner(Learner):
                    critic=critic,
                    genr8r_loss_func=wgan_genr8r_loss,
                    critic_loss_func=wgan_critic_loss,
-                   w_grad_penalty=w_grad_penalty,
                    switcher=switcher,
                    clip=clip,
                    **kwargs
                   )
+    
+    @classmethod
+    def wgangp(cls,
+               dataloaders,
+               generator,
+               critic,
+               switcher=None,
+               gp_lambda=10,
+               **kwargs
+              ):
+        
+        if switcher is None:
+            switcher = FixedGANSwitcher(n_crit=5, n_gen=1)
+        
+        return cls(dataloaders=dataloaders,
+                   generator=generator,
+                   critic=critic,
+                   genr8r_loss_func=wgan_genr8r_loss,
+                   critic_loss_func=wgan_critic_loss,
+                   w_grad_penalty=True,
+                   gp_lambda=gp_lambda,
+                   switcher=switcher,
+                   clip=None,
+                   **kwargs
+                  )
+        
