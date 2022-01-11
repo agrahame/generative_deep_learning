@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from typing import List
-from IPython.core.debugger import set_trace
 
 
 class Sampler(nn.Module):
@@ -27,7 +26,7 @@ class Sampler(nn.Module):
                       out_channels=self.out_channels,
                       kernel_size=self.kernel_size,
                       stride=self.stride,
-                      padding=self.kernel_size // 2  #TODO: Check this. Downsampler uses stride of 2
+                      padding=self.kernel_size // 2
                      ),
             nn.InstanceNorm2d(num_features=self.out_channels),
             nn.ReLU()
@@ -56,7 +55,6 @@ class Upsampler(Sampler):
     
     def forward(self, inputs, skip_input):
         output = self.model(inputs)
-        set_trace()
         
         return torch.cat((output, skip_input), dim=1)
 
@@ -101,7 +99,8 @@ class GeneratorUNet(nn.Module):
             downsamplers.append(downsampler)
         
         for i in range(self.n_downsample_layers - 2, -1, -1):
-            upsampler = Upsampler(in_channels=self.filters[i + 1],
+            in_channels = self.filters[i + 1]
+            upsampler = Upsampler(in_channels= in_channels if i == self.n_downsample_layers - 2 else in_channels * 2,
                                   out_channels=self.filters[i],
                                   kernel_size=self.us_kernel_size,
                                   stride=self.us_stride,
@@ -113,7 +112,7 @@ class GeneratorUNet(nn.Module):
         self.model = nn.Sequential(*downsamplers,
                                    *upsamplers,
                                    nn.Upsample(scale_factor=2),
-                                   nn.Conv2d(in_channels=self.filters[0],
+                                   nn.Conv2d(in_channels=self.filters[0] * 2,
                                              out_channels=self.input_shape[0],
                                              kernel_size=self.us_kernel_size,
                                              stride=self.us_stride,
