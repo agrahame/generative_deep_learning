@@ -140,10 +140,45 @@ class GeneratorUNet(nn.Module):
 
 class DiscriminatorUNet(nn.Module):
     
-    def __init__(self):
+    def __init__(self,
+                 input_shape: List[int],
+                 filters: List[int],
+                 kernel_size: int
+                ):
         super().__init__()
+        self.input_shape = input_shape
+        self.filters = filters
+        self.kernel_size = kernel_size
         
         self._build()
     
     def _build(self):
-        pass
+        layers = []
+        n_filters = len(self.filters)
+        
+        for i in range(n_filters):
+            layers.append(
+                nn.Conv2d(in_channels=self.input_shape[0] if i == 0 else self.filters[i - 1],
+                          out_channels=self.filters[i],
+                          kernel_size=self.kernel_size,
+                          stride=2 if i < n_filters - 1 else 1,
+                          padding=self.kernel_size // 2
+                         )
+            )
+            
+            if i > 0:
+                layers.append(nn.InstanceNorm2d(num_features=self.filters[i]))
+            
+            layers.append(nn.LeakyReLU(negative_slope=0.2))
+        
+        self.model = nn.Sequential(*layers,
+                                   nn.Conv2d(in_channels=self.filters[-1],
+                                             out_channels=1,
+                                             kernel_size=self.kernel_size,
+                                             stride=1,
+                                             padding=self.kernel_size // 2
+                                            )
+                                  )
+    
+    def forward(self, inputs):
+        return self.model(inputs)
