@@ -272,7 +272,7 @@ class CycleGANModule(nn.Module):
 class CycleGANLoss(CycleGANModule):
     
     def __init__(self,
-                 gan: CycleGANModule
+                 gan: CycleGANModule,
                  lambda_valid: int,
                  lambda_reconstr: int,
                  lambda_id: int
