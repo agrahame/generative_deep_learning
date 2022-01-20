@@ -3,6 +3,7 @@ import torch.nn as nn
 from typing import List
 from fastai.vision.all import *
 from fastai.vision.gan import FixedGANSwitcher
+from IPython.core.debugger import set_trace
 
 
 class Sampler(nn.Module):
@@ -168,7 +169,9 @@ class CombndGens(nn.Module):
                                     us_stride=us_stride,
                                     dropout_rate=dropout_rate)
     
-    def forward(self, img_a, img_b):
+    def forward(self, inputs):
+        img_a, img_b = inputs
+        
         fake_b = self.gen_ab(img_a)
         fake_a = self.gen_ba(img_b)
         
@@ -243,7 +246,9 @@ class CombndDiscs(nn.Module):
                                         filters=filters,
                                         kernel_size=kernel_size)
     
-    def forward(self, img_a, img_b):
+    def forward(self, inputs):
+        img_a, img_b = inputs
+        
         return self.disc_a(img_a), self.disc_b(img_b)
 
 
@@ -284,15 +289,16 @@ class CycleGANLoss(CycleGANModule):
         self.lambda_reconstr = lambda_reconstr
         self.lambda_id = lambda_id
     
-    def generator(self, gen_outputs, img_a, img_b):
+    def generator(self, gen_outputs, inputs):
+        img_a, img_b = inputs
         fake_b, fake_a, reconstr_a, reconstr_b, img_a_id, img_b_id = gen_outputs
-        batch_size = img_a[0]
-        img_size = img_a[-1]  # assuming square images
+        batch_size = img_a.shape[0]
+        img_size = img_a.shape[-1]  # assuming square images
         # this reflects the output shape of disc output after the 3 stride-2 convs
-        patch = img_size / 2**3
-        valid_target = torch.ones(batch_size, 1, patch, patch)
+        patch = img_size // 2**3
+        valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
         
-        disc_a_pred, disc_b_pred = self.gan.discriminator(fake_a, fake_b)
+        disc_a_pred, disc_b_pred = self.gan.discriminator((fake_a, fake_b))
         
         valid_loss = nn.MSELoss()
         reconstr_loss = nn.L1Loss()  # MAE
@@ -304,20 +310,120 @@ class CycleGANLoss(CycleGANModule):
         
         return loss
     
-    def discriminator(self, disc_outputs, img_a, img_b):
+    def discriminator(self, disc_outputs, inputs):
+        img_a, _ = inputs
         disc_a_pred, disc_b_pred = disc_outputs
-        batch_size = img_a[0]
-        img_size = img_a[-1]  # assuming square images
+        batch_size = img_a.shape[0]
+        img_size = img_a.shape[-1]  # assuming square images
         # this reflects the output shape of disc output after the 3 stride-2 convs
-        patch = img_size / 2**3
-        valid_target = torch.ones(batch_size, 1, patch, patch)
-        fake_target = torch.zeros(batch_size, 1, patch, patch)
+        patch = img_size // 2**3
+        valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
+        fake_target = torch.zeros(batch_size, 1, patch, patch).to(default_device())
         
-        fake_b, fake_a, _, _, _, _ = self.gan.generator(img_a, img_b)
+        fake_b, fake_a, _, _, _, _ = self.gan.generator(inputs)
+        fake_a_pred, fake_b_pred = self.gan.discriminator((fake_a, fake_b))
         
         disc_loss = nn.MSELoss()
         
-        disc_a_loss = 0.5 * (disc_loss(img_a, valid_target) + disc_loss(fake_a, fake_target))
-        disc_b_loss = 0.5 * (disc_loss(img_b, valid_target) + disc_loss(fake_b, fake_target))
+        disc_a_loss = 0.5 * (disc_loss(disc_a_pred, valid_target) + disc_loss(fake_a_pred, fake_target))
+        disc_b_loss = 0.5 * (disc_loss(disc_b_pred, valid_target) + disc_loss(fake_b_pred, fake_target))
         
         return 0.5 * (disc_a_loss + disc_b_loss)
+
+    
+def freeze_model(model, requires_grad):
+    for param in model.parameters():
+        param.requires_grad_(requires_grad)
+
+
+class GANTrainer(Callback):
+    
+    def __init__(self, gen_first, switch_eval, beta):
+        self.gen_first = gen_first
+        self.switch_eval = switch_eval
+        self.gen_loss = AvgSmoothLoss(beta=beta)
+        self.disc_loss = AvgSmoothLoss(beta=beta)
+    
+    def _set_trainable(self):
+        train_model = self.model.generator if self.model.gen_mode else self.model.discriminator
+        eval_model = self.model.discriminator if self.model.gen_mode else self.model.generator
+        freeze_model(train_model, requires_grad=True)
+        freeze_model(eval_model, requires_grad=False)
+        
+        if self.switch_eval:
+            train_model.train()
+            eval_model.eval()
+    
+    def before_fit(self):
+        self.switch(self.gen_first)
+        self.gen_losses = []
+        self.disc_losses = []
+        self.gen_loss.reset()
+        self.disc_loss.reset()
+    
+    def before_epoch(self):
+        # Switch the gen or disc back to eval if necessary
+        self.switch(self.model.gen_mode)
+    
+    def before_validate(self):
+        self.switch(gen_mode=True)
+    
+    def after_pred(self):
+        # I need the inputs when calculating the losses so swap x and y batch.
+        # The loss takes in the y batch
+        self.learn.xb, self.learn.yb = self.yb, self.xb
+    
+    def after_batch(self):
+        if not self.training:
+            return
+        
+        if self.model.gen_mode:
+            self.gen_loss.accumulate(self.learn)
+            self.gen_losses.append(self.gen_loss.value)
+        else:
+            self.disc_loss.accumulate(self.learn)
+            self.disc_losses.append(self.disc_loss.value)
+    
+    def switch(self, gen_mode=None):
+        self.model.switch(gen_mode)
+        self.loss_func.switch(gen_mode)
+        self._set_trainable()
+
+
+class CycleGANLearner(Learner):
+    
+    def __init__(self,
+                 dataloaders,
+                 generator: CombndGens,
+                 discriminator: CombndDiscs,
+                 lambda_valid: int = 1,
+                 lambda_reconstr: int = 10,
+                 lambda_id: int = 2,
+                 switcher: FixedGANSwitcher = None,
+                 gen_first: bool = False,
+                 beta: float = 0.98,
+                 switch_eval: bool = True,
+                 callbacks: List[Callback] = None,
+                 metrics: List[Metric] = None,
+                 **kwargs
+                ):
+        gan = CycleGANModule(generator=generator,
+                             discriminator=discriminator,
+                             gen_mode=gen_first)
+        loss_func = CycleGANLoss(gan=gan,
+                                 lambda_valid=lambda_valid,
+                                 lambda_reconstr=lambda_reconstr,
+                                 lambda_id=lambda_id)
+        switcher = FixedGANSwitcher() if switcher is None else switcher
+        trainer = GANTrainer(gen_first=gen_first,
+                             switch_eval=switch_eval,
+                             beta=beta)
+        callbacks = L(callbacks) + L(trainer, switcher)
+        metrics = L(metrics) + L(*LossMetrics('gen_loss,disc_loss'))
+        
+        super().__init__(dls=dataloaders,
+                         model=gan,
+                         loss_func=loss_func,
+                         cbs=callbacks,
+                         metrics=metrics,
+                         **kwargs)
