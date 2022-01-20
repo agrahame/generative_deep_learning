@@ -273,6 +273,17 @@ class CycleGANModule(nn.Module):
         
         return self.discriminator(*args)
 
+    
+def disc_target(inp):
+    batch_size = inp.shape[0]
+    img_size = inp.shape[-1]  # assuming square images
+    # this reflects the output shape of disc output after the 3 stride-2 convs
+    patch = img_size // 2**3
+    valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
+    fake_target = torch.zeros(batch_size, 1, patch, patch).to(default_device())
+    
+    return valid_target, fake_target
+    
 
 class CycleGANLoss(CycleGANModule):
     
@@ -292,11 +303,7 @@ class CycleGANLoss(CycleGANModule):
     def generator(self, gen_outputs, inputs):
         img_a, img_b = inputs
         fake_b, fake_a, reconstr_a, reconstr_b, img_a_id, img_b_id = gen_outputs
-        batch_size = img_a.shape[0]
-        img_size = img_a.shape[-1]  # assuming square images
-        # this reflects the output shape of disc output after the 3 stride-2 convs
-        patch = img_size // 2**3
-        valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
+        valid_target, _ = disc_target(img_a)
         
         disc_a_pred, disc_b_pred = self.gan.discriminator((fake_a, fake_b))
         
@@ -313,12 +320,7 @@ class CycleGANLoss(CycleGANModule):
     def discriminator(self, disc_outputs, inputs):
         img_a, _ = inputs
         disc_a_pred, disc_b_pred = disc_outputs
-        batch_size = img_a.shape[0]
-        img_size = img_a.shape[-1]  # assuming square images
-        # this reflects the output shape of disc output after the 3 stride-2 convs
-        patch = img_size // 2**3
-        valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
-        fake_target = torch.zeros(batch_size, 1, patch, patch).to(default_device())
+        valid_target, fake_target = disc_target(img_a)
         
         fake_b, fake_a, _, _, _, _ = self.gan.generator(inputs)
         fake_a_pred, fake_b_pred = self.gan.discriminator((fake_a, fake_b))
