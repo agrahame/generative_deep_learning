@@ -272,17 +272,6 @@ class CycleGANModule(nn.Module):
             return self.generator(*args)
         
         return self.discriminator(*args)
-
-    
-def disc_target(inp):
-    batch_size = inp.shape[0]
-    img_size = inp.shape[-1]  # assuming square images
-    # this reflects the output shape of disc output after the 3 stride-2 convs
-    patch = img_size // 2**3
-    valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
-    fake_target = torch.zeros(batch_size, 1, patch, patch).to(default_device())
-    
-    return valid_target, fake_target
     
 
 class CycleGANLoss(CycleGANModule):
@@ -303,7 +292,7 @@ class CycleGANLoss(CycleGANModule):
     def generator(self, gen_outputs, inputs):
         img_a, img_b = inputs
         fake_b, fake_a, reconstr_a, reconstr_b, img_a_id, img_b_id = gen_outputs
-        valid_target, _ = disc_target(img_a)
+        valid_target, _ = self._disc_target(img_a)
         
         disc_a_pred, disc_b_pred = self.gan.discriminator((fake_a, fake_b))
         
@@ -315,12 +304,14 @@ class CycleGANLoss(CycleGANModule):
         loss += self.lambda_reconstr * (reconstr_loss(reconstr_a, img_a) + reconstr_loss(reconstr_b, img_b))
         loss += self.lambda_id * (id_loss(img_a_id, img_a) + id_loss(img_b_id, img_b))
         
-        return loss
+        self.gen_loss = loss
+        
+        return self.gen_loss
     
     def discriminator(self, disc_outputs, inputs):
         img_a, _ = inputs
         disc_a_pred, disc_b_pred = disc_outputs
-        valid_target, fake_target = disc_target(img_a)
+        valid_target, fake_target = self._disc_target(img_a)
         
         fake_b, fake_a, _, _, _, _ = self.gan.generator(inputs)
         fake_a_pred, fake_b_pred = self.gan.discriminator((fake_a, fake_b))
@@ -330,7 +321,19 @@ class CycleGANLoss(CycleGANModule):
         disc_a_loss = 0.5 * (disc_loss(disc_a_pred, valid_target) + disc_loss(fake_a_pred, fake_target))
         disc_b_loss = 0.5 * (disc_loss(disc_b_pred, valid_target) + disc_loss(fake_b_pred, fake_target))
         
-        return 0.5 * (disc_a_loss + disc_b_loss)
+        self.disc_loss = 0.5 * (disc_a_loss + disc_b_loss)
+        
+        return self.disc_loss
+    
+    def _disc_target(self, inp):
+        batch_size = inp.shape[0]
+        img_size = inp.shape[-1]  # assuming square images
+        # this reflects the output shape of disc output after the 3 stride-2 convs
+        patch = img_size // 2**3
+        valid_target = torch.ones(batch_size, 1, patch, patch).to(default_device())
+        fake_target = torch.zeros(batch_size, 1, patch, patch).to(default_device())
+
+        return valid_target, fake_target
 
     
 def freeze_model(model, requires_grad):
